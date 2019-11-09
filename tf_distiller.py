@@ -67,8 +67,9 @@ optimizer = tf.keras.optimizers.Adam(learning_rate=3e-5, epsilon=1e-08, clipnorm
 
 for x, y in train_dataset:
   with tf.GradientTape() as tape:
-    teacher_logits = teacher(x)
-    student_logits = student(x)
+    teacher_logits = teacher(x['input_ids'])
+    student_logits = student(x['input_ids'])
+    targets = y
     loss = loss_fn(teacher_logits, student_logits, targets, config)
   # only optimize student weights
   gradients = tape.gradient(loss, student.trainable_variables)
