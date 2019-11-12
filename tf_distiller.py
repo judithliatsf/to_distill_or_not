@@ -8,7 +8,8 @@ class DistilMyBertConfig(PretrainedConfig):
                  num_classes=2,
                  distill_temperature=0.1,
                  task_balance=0.5,
-                 max_seq_len = 128,
+                 max_seq_len=128,
+                 epoch = 5,
                  **kwargs):
         super(PretrainedConfig, self).__init__(*kwargs)
         
@@ -23,6 +24,7 @@ class DistilMyBertConfig(PretrainedConfig):
             self.distill_temperature = distill_temperature
             self.task_balance = task_balance
             self.max_seq_len = max_seq_len
+            self.epoch = epoch
 
 # define knowledge distillation loss
 def loss_fn(teacher_logits, student_logits, targets, config):
@@ -63,7 +65,9 @@ valid_dataset = valid_dataset.batch(64)
 
 # prepare training
 config = DistilMyBertConfig(distill_temperature=0.8, task_balance=0.5)
-optimizer = tf.keras.optimizers.Adam(learning_rate=3e-5, epsilon=1e-08, clipnorm=1.0)
+optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, epsilon=1e-06, clipnorm=5.0)
+ckpt = tf.train.Checkpoint(step=tf.Variable(1), optimizer=optimizer, net=student)
+manager = tf.train.CheckpointManager(ckpt, '/tmp/distil', max_to_keep=5)
 
 for x, y in train_dataset:
   with tf.GradientTape() as tape:
@@ -75,4 +79,43 @@ for x, y in train_dataset:
   gradients = tape.gradient(loss, student.trainable_variables)
   optimizer.apply_gradients(zip(gradients, student.trainable_variables))
 
-  tf.saved_model.save(student, "mrpc/3")
+  tf.saved_model.save(student, "mrpc/4")
+
+train_loss = []
+train_acc = []
+
+for epoch in range(config.epoch):
+  epoch_end_loss = tf.keras.metrics.Mean()
+  epoch_end_acc = tf.keras.metrics.SparseCategoricalAccuracy()
+  # Training loop - using batches of 16
+  for step, (x, y) in enumerate(train_dataset):
+    with tf.GradientTape() as tape:
+      student_logits = student(x['input_ids'])[0]
+      teacher_logits = teacher(x['input_ids'])[0]
+      targets = y
+      loss = loss_fn(teacher_logits, student_logits, targets, config)
+    
+    # only optimize student weights
+    gradients = tape.gradient(loss, student.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, student.trainable_variables))
+
+    # logging
+    if step % 100 == 0:
+      print(step, float(loss))
+    
+    # log accuracy
+    pred = tf.nn.softmax(student_logits)
+    epoch_end_acc(targets, pred)
+    epoch_end_loss(loss)
+    
+  # End epoch
+  train_acc.append(epoch_end_acc.result())
+  train_loss.append(epoch_end_loss.result())
+  
+  # save checkpoint
+  ckpt.step.assign_add(1)
+  save_path = manager.save()
+  print("Saved checkpoint for epoch {} at {}".format(int(ckpt.step), save_path))
+  print("epoch {:03d}: Loss: {:.3f}, Accuracy: {:.3%}".format(epoch, epoch_end_loss.result(), epoch_end_acc.result()))
+  
+
